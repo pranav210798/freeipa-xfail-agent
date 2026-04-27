@@ -1,0 +1,3 @@
+[console_scripts]
+freeipa-xfail = freeipa_xfail_agent.cli:app
+freeipa-xfail-mcp = freeipa_xfail_agent.mcp_server:main

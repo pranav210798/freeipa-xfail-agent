@@ -1,0 +1,111 @@
+Metadata-Version: 2.4
+Name: freeipa-xfail-agent
+Version: 0.1.0
+Summary: Agentic xfail cleanup for FreeIPA using JIRA and Pagure status.
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: httpx>=0.27.0
+Requires-Dist: typer>=0.12.0
+Requires-Dist: rich>=13.7.0
+Requires-Dist: python-dotenv>=1.0.1
+Requires-Dist: mcp>=1.0.0
+
+# freeipa-xfail-agent
+
+Agentic workflow to clean up stale `pytest.mark.xfail` markers in FreeIPA tests by checking linked JIRA and Pagure tickets.
+
+The tool:
+
+- scans `ipatests/test_integration` and `ipatests/test_xmlrpc` (or custom paths)
+- extracts ticket references from xfail decorators
+- checks ticket status through read-only APIs
+- removes xfails only when linked tickets are closed
+- supports branch-aware workflows and optional commit preparation
+- exposes both a CLI and an MCP server
+
+## Why this exists
+
+In long-lived branches, xfails often remain even after tickets are resolved. This project helps continuously align tests with current tracker state and produce review-ready changes.
+
+## Quick start
+
+1) Install:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .
+```
+
+2) Set environment variables (read-only tokens):
+
+```bash
+export JIRA_BASE_URL="https://your-jira.example.com"
+export JIRA_EMAIL="you@example.com"
+export JIRA_API_TOKEN="***"
+export PAGURE_BASE_URL="https://pagure.io"
+export PAGURE_API_TOKEN="***"
+```
+
+3) See branches:
+
+```bash
+freeipa-xfail branches --repo-path /path/to/freeipa
+```
+
+4) Dry-run scan:
+
+```bash
+freeipa-xfail scan \
+  --repo-path /path/to/freeipa \
+  --branch master \
+  --expected-origin your-github-username \
+  --path ipatests/test_integration \
+  --path ipatests/test_xmlrpc
+```
+
+5) Apply removal for closed tickets:
+
+```bash
+freeipa-xfail apply \
+  --repo-path /path/to/freeipa \
+  --branch master \
+  --create-branch xfail-cleanup-master \
+  --expected-origin your-github-username \
+  --commit \
+  --signoff
+```
+
+`--expected-origin` is a safety guard. If your repository `origin` URL does not contain the given text, the command stops without making changes.
+
+## MCP server
+
+Run the MCP server:
+
+```bash
+freeipa-xfail-mcp
+```
+
+Provided tools:
+
+- `list_branches`
+- `scan_xfails`
+- `plan_xfail_cleanup`
+- `apply_xfail_cleanup`
+
+## Safety behavior
+
+- xfail removal occurs only when:
+  - an xfail block contains a ticket link/key
+  - tracker status is recognized as closed
+- ambiguous or inaccessible tickets are kept as-is
+- dry-run mode is default behavior for planning
+
+## Status mapping defaults
+
+- JIRA closed statuses:
+  - `done`, `closed`, `resolved`
+- Pagure closed statuses:
+  - `closed`
+
+You can adjust mappings in code for your organization.

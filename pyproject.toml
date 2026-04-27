@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "freeipa-xfail-agent"
+version = "0.1.0"
+description = "Agentic xfail cleanup for FreeIPA using JIRA and Pagure status."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "httpx>=0.27.0",
+  "typer>=0.12.0",
+  "rich>=13.7.0",
+  "python-dotenv>=1.0.1",
+  "mcp>=1.0.0"
+]
+
+[project.scripts]
+freeipa-xfail = "freeipa_xfail_agent.cli:app"
+freeipa-xfail-mcp = "freeipa_xfail_agent.mcp_server:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
