@@ -61,3 +61,7 @@ class GitRepo:
             args.append("--signoff")
         _run_git(self.repo_path, *args)
         return _run_git(self.repo_path, "rev-parse", "HEAD")
+
+    def push_current_branch(self) -> None:
+        current = self.current_branch()
+        _run_git(self.repo_path, "push", "-u", "origin", current)

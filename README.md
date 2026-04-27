@@ -8,6 +8,8 @@ The tool:
 - extracts ticket references from xfail decorators
 - checks ticket status through read-only APIs
 - removes xfails only when linked tickets are closed
+- distinguishes plain vs conditional xfail markers
+- supports interactive terminal selection (arrow keys + checkbox)
 - supports branch-aware workflows and optional commit preparation
 - exposes both a CLI and an MCP server
 
@@ -74,6 +76,23 @@ freeipa-xfail apply \
   --commit
 ```
 
+For interactive selection with keyboard controls:
+
+```bash
+freeipa-xfail apply \
+  --repo-path /path/to/freeipa \
+  --branch master \
+  --interactive \
+  --xfail-selection all
+```
+
+Options:
+
+- `--interactive`: opens a checkbox selector (up/down arrows to navigate, space to toggle)
+- `--xfail-selection`: choose `all`, `plain-only`, or `conditional-only`
+- `--commit-strategy`: choose `batch` (single commit) or `single` (one commit per selected xfail)
+- `--push`: push commits to origin automatically
+
 `--expected-origin` is a safety guard. If your repository `origin` URL does not contain the given text, the command stops without making changes.
 
 If you want to use the `apply` command in preview-only mode:
@@ -107,6 +126,7 @@ Provided tools:
   - an xfail block contains a ticket link/key
   - tracker status is recognized as closed
 - ambiguous or inaccessible tickets are kept as-is
+- conditional xfails can be filtered and reviewed separately before removal
 - dry-run mode is default behavior for planning
 
 ## Status mapping defaults

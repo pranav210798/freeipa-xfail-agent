@@ -1,14 +1,27 @@
 from __future__ import annotations
 
+import hashlib
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 
 from .config import AppConfig
 from .git_utils import GitRepo
 from .issue_trackers import JiraClient, PagureClient, TrackerGateway
-from .models import TicketStatus, XfailBlock, XfailDecision
+from .models import TicketStatus, XfailBlock, XfailDecision, XfailKind
 from .xfail_scanner import scan_xfails
+
+
+class CommitStrategy(str, Enum):
+    BATCH = "batch"
+    SINGLE = "single"
+
+
+class XfailSelection(str, Enum):
+    ALL = "all"
+    PLAIN_ONLY = "plain-only"
+    CONDITIONAL_ONLY = "conditional-only"
 
 
 @dataclass
@@ -21,6 +34,7 @@ class CleanupResult:
     planned_files: list[str]
     proposed_commit_message: str
     commit_sha: str | None = None
+    commit_shas: list[str] = field(default_factory=list)
 
 
 def _build_gateway(config: AppConfig) -> TrackerGateway:
@@ -81,6 +95,34 @@ def evaluate_blocks(blocks: list[XfailBlock], gateway: TrackerGateway) -> list[X
     return decisions
 
 
+def decision_key(decision: XfailDecision, repo_path: Path) -> str:
+    rel_file = str(decision.block.file_path.relative_to(repo_path))
+    test_name = decision.block.test_name or "unknown_testcase"
+    digest = hashlib.sha1(
+        f"{rel_file}|{test_name}|{decision.block.kind.value}|{decision.block.text}".encode("utf-8")
+    ).hexdigest()
+    return f"{rel_file}:{digest[:12]}"
+
+
+def _filter_removable(
+    removable: list[XfailDecision],
+    repo_path: Path,
+    selection: XfailSelection,
+    selected_keys: set[str] | None,
+) -> list[XfailDecision]:
+    filtered: list[XfailDecision] = []
+    for item in removable:
+        is_conditional = item.block.kind == XfailKind.CONDITIONAL
+        if selection == XfailSelection.PLAIN_ONLY and is_conditional:
+            continue
+        if selection == XfailSelection.CONDITIONAL_ONLY and not is_conditional:
+            continue
+        if selected_keys is not None and decision_key(item, repo_path) not in selected_keys:
+            continue
+        filtered.append(item)
+    return filtered
+
+
 def _remove_block_lines(file_path: Path, blocks: list[XfailBlock]) -> bool:
     raw_lines = file_path.read_text(encoding="utf-8").splitlines()
     to_remove: set[int] = set()
@@ -96,10 +138,35 @@ def _remove_block_lines(file_path: Path, blocks: list[XfailBlock]) -> bool:
     return True
 
 
+def _remove_block_by_snippet(file_path: Path, block: XfailBlock) -> bool:
+    raw_lines = file_path.read_text(encoding="utf-8").splitlines()
+    snippet_lines = block.text.splitlines()
+    if not snippet_lines:
+        return False
+
+    candidates: list[int] = []
+    window = len(snippet_lines)
+    max_start = len(raw_lines) - window
+    for idx in range(max_start + 1):
+        if raw_lines[idx : idx + window] == snippet_lines:
+            candidates.append(idx)
+
+    if not candidates:
+        return False
+
+    # Prefer the candidate closest to original line to disambiguate duplicates.
+    chosen = min(candidates, key=lambda idx: abs((idx + 1) - block.start_line))
+    updated = raw_lines[:chosen] + raw_lines[chosen + window :]
+    file_path.write_text("\n".join(updated) + "\n", encoding="utf-8")
+    return True
+
+
 def _group_removals_by_file(removable: list[XfailDecision]) -> dict[Path, list[XfailBlock]]:
     grouped: dict[Path, list[XfailBlock]] = defaultdict(list)
     for decision in removable:
         grouped[decision.block.file_path].append(decision.block)
+    for file_path, blocks in grouped.items():
+        grouped[file_path] = sorted(blocks, key=lambda block: block.start_line, reverse=True)
     return grouped
 
 
@@ -142,6 +209,8 @@ def plan_cleanup(
     expected_origin: str | None = None,
     person_name: str | None = None,
     person_email: str | None = None,
+    selection: XfailSelection = XfailSelection.ALL,
+    selected_keys: set[str] | None = None,
 ) -> CleanupResult:
     git = GitRepo(repo_path)
     git.ensure_repo()
@@ -153,6 +222,7 @@ def plan_cleanup(
     decisions = evaluate_blocks(blocks, gateway)
 
     removable = [item for item in decisions if item.should_remove]
+    removable = _filter_removable(removable, repo_path, selection, selected_keys)
     remaining = [item for item in decisions if not item.should_remove]
     planned_files = sorted({str(item.block.file_path.relative_to(repo_path)) for item in removable})
     commit_message = build_commit_message(
@@ -179,9 +249,13 @@ def apply_cleanup(
     config: AppConfig,
     create_branch: str | None = None,
     do_commit: bool = False,
+    commit_strategy: CommitStrategy = CommitStrategy.BATCH,
+    push: bool = False,
     expected_origin: str | None = None,
     person_name: str | None = None,
     person_email: str | None = None,
+    selection: XfailSelection = XfailSelection.ALL,
+    selected_keys: set[str] | None = None,
 ) -> CleanupResult:
     git = GitRepo(repo_path)
     git.ensure_repo()
@@ -198,24 +272,48 @@ def apply_cleanup(
     blocks = scan_xfails(repo_path, test_paths)
     decisions = evaluate_blocks(blocks, gateway)
     removable = [item for item in decisions if item.should_remove]
+    removable = _filter_removable(removable, repo_path, selection, selected_keys)
     remaining = [item for item in decisions if not item.should_remove]
 
-    grouped = _group_removals_by_file(removable)
     updated_files: list[str] = []
-    for file_path, file_blocks in grouped.items():
-        changed = _remove_block_lines(file_path, file_blocks)
-        if changed:
-            updated_files.append(str(file_path.relative_to(repo_path)))
-
-    commit_sha = None
+    commit_shas: list[str] = []
     commit_message = build_commit_message(
         removable=removable,
         repo_path=repo_path,
         person_name=person_name,
         person_email=person_email,
     )
-    if do_commit and updated_files and git.has_changes():
-        commit_sha = git.commit_all(message=commit_message)
+
+    if commit_strategy == CommitStrategy.SINGLE:
+        for decision in removable:
+            changed = _remove_block_by_snippet(decision.block.file_path, decision.block)
+            if not changed:
+                continue
+            rel_file = str(decision.block.file_path.relative_to(repo_path))
+            if rel_file not in updated_files:
+                updated_files.append(rel_file)
+            if do_commit and git.has_changes():
+                single_message = build_commit_message(
+                    removable=[decision],
+                    repo_path=repo_path,
+                    person_name=person_name,
+                    person_email=person_email,
+                )
+                commit_shas.append(git.commit_all(message=single_message))
+                if push:
+                    git.push_current_branch()
+    else:
+        grouped = _group_removals_by_file(removable)
+        for file_path, file_blocks in grouped.items():
+            changed = _remove_block_lines(file_path, file_blocks)
+            if changed:
+                updated_files.append(str(file_path.relative_to(repo_path)))
+        if do_commit and updated_files and git.has_changes():
+            commit_shas.append(git.commit_all(message=commit_message))
+            if push:
+                git.push_current_branch()
+
+    commit_sha = commit_shas[-1] if commit_shas else None
 
     return CleanupResult(
         branch=active_branch,
@@ -226,4 +324,5 @@ def apply_cleanup(
         planned_files=sorted({str(item.block.file_path.relative_to(repo_path)) for item in removable}),
         proposed_commit_message=commit_message,
         commit_sha=commit_sha,
+        commit_shas=commit_shas,
     )

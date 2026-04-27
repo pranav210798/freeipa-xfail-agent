@@ -10,6 +10,11 @@ class TicketType(str, Enum):
     PAGURE = "pagure"
 
 
+class XfailKind(str, Enum):
+    PLAIN = "plain"
+    CONDITIONAL = "conditional"
+
+
 @dataclass(frozen=True)
 class TicketRef:
     ticket_type: TicketType
@@ -24,6 +29,7 @@ class XfailBlock:
     end_line: int
     test_name: str | None
     text: str
+    kind: XfailKind = XfailKind.PLAIN
     tickets: list[TicketRef] = field(default_factory=list)
 
 

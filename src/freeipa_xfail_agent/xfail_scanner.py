@@ -4,7 +4,7 @@ import ast
 import re
 from pathlib import Path
 
-from .models import XfailBlock
+from .models import XfailBlock, XfailKind
 from .ticket_parser import extract_ticket_refs
 
 TEST_DEF_RE = re.compile(r"^\s*def\s+(test_[A-Za-z0-9_]+)\s*\(")
@@ -73,6 +73,34 @@ def _iter_python_files(repo_path: Path, relative_paths: list[str]) -> list[Path]
     return files
 
 
+def _classify_xfail_kind(text: str) -> XfailKind:
+    stripped = text.strip()
+    expr = stripped[1:].strip() if stripped.startswith("@") else stripped
+    if not expr:
+        return XfailKind.PLAIN
+
+    try:
+        parsed = ast.parse(expr, mode="eval")
+    except SyntaxError:
+        return XfailKind.PLAIN
+
+    call = parsed.body
+    if not isinstance(call, ast.Call):
+        return XfailKind.PLAIN
+
+    if any(keyword.arg == "condition" for keyword in call.keywords if keyword.arg):
+        return XfailKind.CONDITIONAL
+
+    if not call.args:
+        return XfailKind.PLAIN
+
+    first_arg = call.args[0]
+    if isinstance(first_arg, ast.Constant) and isinstance(first_arg.value, str):
+        return XfailKind.PLAIN
+
+    return XfailKind.CONDITIONAL
+
+
 def _extract_xfail_blocks(file_path: Path) -> list[XfailBlock]:
     lines = file_path.read_text(encoding="utf-8").splitlines()
     test_spans = _collect_test_spans(lines)
@@ -114,6 +142,7 @@ def _extract_xfail_blocks(file_path: Path) -> list[XfailBlock]:
                 end_line=block_end,
                 test_name=test_name,
                 text=text,
+                kind=_classify_xfail_kind(text),
                 tickets=extract_ticket_refs(text),
             )
             blocks.append(block)
