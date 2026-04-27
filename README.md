@@ -86,6 +86,19 @@ freeipa-xfail apply \
   --xfail-selection all
 ```
 
+To **only try the checkbox UI** (up/down, space) with **no file edits and no commit**, combine `--interactive` and `--dry-run`:
+
+```bash
+freeipa-xfail apply \
+  --repo-path /path/to/freeipa \
+  --branch master \
+  --interactive \
+  --dry-run \
+  --xfail-selection all
+```
+
+After you confirm the selection, the tool prints what would be removed and exits. It does not ask for apply confirmation and does not touch the working tree.
+
 Options:
 
 - `--interactive`: opens a checkbox selector (up/down arrows to navigate, space to toggle)
@@ -104,6 +117,14 @@ freeipa-xfail apply \
   --expected-origin your-github-username \
   --dry-run
 ```
+
+## Terminal colors
+
+The CLI uses [Rich](https://github.com/Textualize/rich) (widely used, maintained) for tables and progress output. It follows common conventions:
+
+- If **`NO_COLOR`** is set (any value), colors are disabled.
+- If stdout is not a TTY (pipes, some IDE panels), colors are off unless you set **`FORCE_COLOR=1`** or **`CLICOLOR_FORCE=1`**.
+- Interactive checkbox labels avoid `[brackets]` because [questionary](https://github.com/tmbo/questionary) / prompt_toolkit treats `[...]` as markup.
 
 ## MCP server
 

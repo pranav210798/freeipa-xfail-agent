@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, TypeVar
@@ -21,8 +23,25 @@ from .workflow import (
     plan_cleanup,
 )
 
+
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _make_console() -> Console:
+    """Rich Console tuned for real terminals (Cursor, VS Code, ssh, CI).
+
+    - Honors https://no-color.org/ when ``NO_COLOR`` is set (any value).
+    - Enables ANSI styles when stdout is a TTY, or when ``FORCE_COLOR`` / ``CLICOLOR_FORCE`` is set.
+    """
+    no_color = "NO_COLOR" in os.environ
+    force_color = _env_truthy("FORCE_COLOR") or _env_truthy("CLICOLOR_FORCE")
+    force_terminal = sys.stdout.isatty() or force_color
+    return Console(force_terminal=force_terminal, no_color=no_color, highlight=True)
+
+
 app = typer.Typer(help="FreeIPA xfail cleanup automation.")
-console = Console()
+console = _make_console()
 
 DEFAULT_PATHS = ["ipatests/test_integration", "ipatests/test_xmlrpc"]
 T = TypeVar("T")
@@ -103,13 +122,32 @@ def _print_result(result: CleanupResult) -> None:
         console.print(f"[bold green]Commits created:[/bold green] {len(result.commit_shas)}")
 
 
+def _print_selected_removals_preview(repo_path: Path, decisions: list[XfailDecision]) -> None:
+    """Show what would be removed (used for interactive + dry-run only)."""
+    if not decisions:
+        return
+    table = Table(title="Would remove (dry run — no writes)")
+    table.add_column("File")
+    table.add_column("Lines")
+    table.add_column("Tickets")
+    for decision in decisions:
+        tickets = ", ".join(status.ticket.normalized_id for status in decision.statuses) or "-"
+        table.add_row(
+            str(decision.block.file_path.relative_to(repo_path)),
+            f"{decision.block.start_line}-{decision.block.end_line}",
+            tickets,
+        )
+    console.print(table)
+
+
 def _format_decision_choice(decision: XfailDecision, repo_path: Path) -> str:
     rel_file = str(decision.block.file_path.relative_to(repo_path))
     test_name = decision.block.test_name or "unknown_testcase"
     kind = "conditional" if decision.block.kind == XfailKind.CONDITIONAL else "plain"
     tickets = ", ".join(status.ticket.normalized_id for status in decision.statuses) or "no-issue"
+    # Avoid "[...]" — questionary uses prompt_toolkit, which treats square brackets as markup.
     return (
-        f"[{kind}] {test_name} | {rel_file}:{decision.block.start_line}-{decision.block.end_line} | "
+        f"{kind}: {test_name} | {rel_file}:{decision.block.start_line}-{decision.block.end_line} | "
         f"{tickets}"
     )
 
@@ -213,7 +251,12 @@ def apply(
         bool,
         typer.Option(help="Push commits to origin after commit(s)"),
     ] = False,
-    dry_run: Annotated[bool, typer.Option(help="Preview only. Do not modify files")] = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            help="Preview only, no file changes. With --interactive, runs checkbox UI then exits without applying."
+        ),
+    ] = False,
     yes: Annotated[bool, typer.Option(help="Skip confirmation prompt")] = False,
     interactive: Annotated[
         bool,
@@ -238,7 +281,8 @@ def apply(
 ) -> None:
     name, email = _collect_person_details(person_name, person_email)
 
-    if dry_run:
+    # Plain dry-run: show full plan, no interactive UI
+    if dry_run and not interactive:
         result = _run_with_progress(
             "Preparing dry-run plan...",
             lambda: plan_cleanup(
@@ -276,6 +320,20 @@ def apply(
         selected_keys = _interactive_select_removals(repo_path, preview.removable)
         if not selected_keys:
             console.print("No xfails selected. Cancelled.")
+            raise typer.Exit(code=0)
+
+        if dry_run:
+            chosen = [
+                d
+                for d in preview.removable
+                if decision_key(d, repo_path) in selected_keys
+            ]
+            console.print(
+                "[bold yellow]Dry run (interactive):[/bold yellow] "
+                "checkbox flow completed; repository was not modified."
+            )
+            _print_selected_removals_preview(repo_path, chosen)
+            console.print(f"[dim]Selected {len(chosen)} removable xfail(s). Run without --dry-run to apply.[/dim]")
             raise typer.Exit(code=0)
 
     if not yes:
