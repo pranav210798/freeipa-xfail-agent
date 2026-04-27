@@ -157,4 +157,3 @@ Provided tools:
 - Pagure closed statuses:
   - `closed`
 
-You can adjust mappings in code for your organization.
