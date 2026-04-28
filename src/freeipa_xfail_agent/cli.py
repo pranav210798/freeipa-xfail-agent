@@ -154,30 +154,171 @@ def _format_decision_choice(decision: XfailDecision, repo_path: Path) -> str:
 
 def _interactive_select_removals(repo_path: Path, removable: list[XfailDecision]) -> set[str]:
     try:
-        import questionary
+        from prompt_toolkit.application import Application
+        from prompt_toolkit.key_binding import KeyBindings
+        from prompt_toolkit.layout import Layout
+        from prompt_toolkit.layout.controls import FormattedTextControl
+        from prompt_toolkit.layout.containers import Window
+        from prompt_toolkit.styles import Style
     except ImportError as exc:  # pragma: no cover - runtime dependency message
         raise RuntimeError(
-            "Interactive selection requires questionary. Install dependencies with `pip install -e .`."
+            "Interactive selection requires prompt_toolkit. Install dependencies with `pip install -e .`."
         ) from exc
 
     key_to_decision = {decision_key(item, repo_path): item for item in removable}
-    choices = []
-    for key, item in key_to_decision.items():
-        choices.append(
-            questionary.Choice(
-                title=_format_decision_choice(item, repo_path),
-                value=key,
-                checked=item.block.kind != XfailKind.CONDITIONAL,
+    ordered_keys = list(key_to_decision.keys())
+    selected: set[str] = {
+        key for key in ordered_keys if key_to_decision[key].block.kind != XfailKind.CONDITIONAL
+    }
+    cursor = 0
+    preview_mode = False
+    status_message = ""
+    snippet_cache: dict[str, str] = {}
+
+    def _current_key() -> str:
+        return ordered_keys[cursor]
+
+    def _build_snippet_text(key: str) -> str:
+        cached = snippet_cache.get(key)
+        if cached is not None:
+            return cached
+
+        decision = key_to_decision[key]
+        file_path = decision.block.file_path
+        test_name = decision.block.test_name or "unknown_testcase"
+        rel_file = str(file_path.relative_to(repo_path))
+        lines = file_path.read_text(encoding="utf-8").splitlines()
+        start_line = max(1, decision.block.start_line - 5)
+        end_line = min(len(lines), decision.block.end_line + 15)
+
+        header = [
+            f"Preview: {test_name}",
+            f"File: {rel_file}",
+            f"Range: {decision.block.start_line}-{decision.block.end_line}",
+            "",
+        ]
+        body = [f"{line_no:>5} | {lines[line_no - 1]}" for line_no in range(start_line, end_line + 1)]
+        snippet = "\n".join(header + body)
+        snippet_cache[key] = snippet
+        return snippet
+
+    def _render() -> list[tuple[str, str]]:
+        fragments: list[tuple[str, str]] = []
+        if preview_mode:
+            fragments.append(("class:title", "XFails selector (preview mode)\n"))
+            fragments.append(("class:hint", "Keys: b/esc=back, up/down=next testcase, enter=confirm selection\n\n"))
+            snippets = _build_snippet_text(_current_key())
+            for line in snippets.splitlines():
+                fragments.append(("", line + "\n"))
+        else:
+            fragments.append(("class:title", "Select xfails to remove\n"))
+            fragments.append(
+                (
+                    "class:hint",
+                    "Keys: up/down=move, space=toggle, v=preview snippet, a=toggle all, i=invert, enter=confirm\n\n",
+                )
             )
-        )
-    selected = questionary.checkbox(
-        "Select xfails to remove (up/down to navigate, space to toggle):",
-        choices=choices,
-        validate=lambda picked: True if picked else "Select at least one xfail.",
-    ).ask()
-    if not selected:
+            for idx, key in enumerate(ordered_keys):
+                marker = "●" if key in selected else "○"
+                pointer = "» " if idx == cursor else "  "
+                line = f"{pointer}{marker} {_format_decision_choice(key_to_decision[key], repo_path)}\n"
+                style = "class:selected" if idx == cursor else ""
+                fragments.append((style, line))
+            if status_message:
+                fragments.append(("\nclass:error", f"\n{status_message}\n"))
+        return fragments
+
+    kb = KeyBindings()
+
+    @kb.add("up")
+    @kb.add("k")
+    def _move_up(event) -> None:  # type: ignore[no-untyped-def]
+        nonlocal cursor
+        cursor = (cursor - 1) % len(ordered_keys)
+
+    @kb.add("down")
+    @kb.add("j")
+    def _move_down(event) -> None:  # type: ignore[no-untyped-def]
+        nonlocal cursor
+        cursor = (cursor + 1) % len(ordered_keys)
+
+    @kb.add("space")
+    def _toggle(event) -> None:  # type: ignore[no-untyped-def]
+        nonlocal status_message
+        if preview_mode:
+            return
+        key = _current_key()
+        if key in selected:
+            selected.remove(key)
+        else:
+            selected.add(key)
+        status_message = ""
+
+    @kb.add("a")
+    def _toggle_all(event) -> None:  # type: ignore[no-untyped-def]
+        if preview_mode:
+            return
+        if len(selected) == len(ordered_keys):
+            selected.clear()
+        else:
+            selected.update(ordered_keys)
+
+    @kb.add("i")
+    def _invert(event) -> None:  # type: ignore[no-untyped-def]
+        if preview_mode:
+            return
+        inverted = {key for key in ordered_keys if key not in selected}
+        selected.clear()
+        selected.update(inverted)
+
+    @kb.add("v")
+    def _enter_preview(event) -> None:  # type: ignore[no-untyped-def]
+        nonlocal preview_mode
+        preview_mode = True
+
+    @kb.add("b")
+    @kb.add("escape")
+    def _exit_preview_or_cancel(event) -> None:  # type: ignore[no-untyped-def]
+        nonlocal preview_mode
+        if preview_mode:
+            preview_mode = False
+        else:
+            event.app.exit(result=None)
+
+    @kb.add("enter")
+    def _confirm(event) -> None:  # type: ignore[no-untyped-def]
+        nonlocal status_message, preview_mode
+        if preview_mode:
+            preview_mode = False
+            return
+        if not selected:
+            status_message = "Select at least one xfail."
+            return
+        event.app.exit(result=set(selected))
+
+    @kb.add("c-c")
+    def _cancel(event) -> None:  # type: ignore[no-untyped-def]
+        event.app.exit(result=None)
+
+    control = FormattedTextControl(_render, focusable=True, key_bindings=kb)
+    window = Window(content=control, always_hide_cursor=True, wrap_lines=False)
+    app = Application(
+        layout=Layout(window),
+        key_bindings=kb,
+        full_screen=True,
+        style=Style.from_dict(
+            {
+            "title": "bold",
+            "hint": "fg:#888888",
+            "selected": "reverse",
+            "error": "fg:ansired",
+            }
+        ),
+    )
+    result: set[str] | None = app.run()
+    if not result:
         return set()
-    return set(selected)
+    return result
 
 
 @app.command("branches")
@@ -321,13 +462,13 @@ def apply(
         if not selected_keys:
             console.print("No xfails selected. Cancelled.")
             raise typer.Exit(code=0)
+        chosen = [
+            d
+            for d in preview.removable
+            if decision_key(d, repo_path) in selected_keys
+        ]
 
         if dry_run:
-            chosen = [
-                d
-                for d in preview.removable
-                if decision_key(d, repo_path) in selected_keys
-            ]
             console.print(
                 "[bold yellow]Dry run (interactive):[/bold yellow] "
                 "checkbox flow completed; repository was not modified."

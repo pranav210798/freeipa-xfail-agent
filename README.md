@@ -102,6 +102,7 @@ After you confirm the selection, the tool prints what would be removed and exits
 Options:
 
 - `--interactive`: opens a checkbox selector (up/down arrows to navigate, space to toggle)
+- in the same selector, press `v` to preview the currently highlighted testcase snippet and `b`/`Esc` to return
 - `--xfail-selection`: choose `all`, `plain-only`, or `conditional-only`
 - `--commit-strategy`: choose `batch` (single commit) or `single` (one commit per selected xfail)
 - `--push`: push commits to origin automatically
