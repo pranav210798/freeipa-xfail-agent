@@ -2,22 +2,47 @@
 
 Agentic workflow to clean up stale `pytest.mark.xfail` markers in FreeIPA tests by checking linked JIRA and Pagure tickets.
 
-The tool:
+## What this project does
 
-- scans `ipatests/test_integration` and `ipatests/test_xmlrpc` (or custom paths)
-- extracts ticket references from xfail decorators
-- checks ticket status through read-only APIs
-- removes xfails only when linked tickets are closed
-- distinguishes plain vs conditional xfail markers
-- supports interactive terminal selection (arrow keys + checkbox)
-- supports branch-aware workflows and optional commit preparation
-- exposes both a CLI and an MCP server
+- Scans `ipatests/test_integration` and `ipatests/test_xmlrpc` (or custom paths)
+- Extracts ticket references from xfail decorators
+- Checks ticket status through read-only APIs
+- Removes xfails only when linked tickets are closed
+- Distinguishes plain vs conditional xfail markers
+- Supports interactive terminal selection (arrow keys + checkbox)
+- Supports branch-aware workflows and optional commit preparation
+- Exposes both a CLI and an MCP server
 
 ## Why this exists
 
 In long-lived branches, xfails often remain even after tickets are resolved. This project helps continuously align tests with current tracker state and produce review-ready changes.
 
-## Quick start
+## End-to-end workflow
+
+```mermaid
+flowchart TD
+    userInput[UserInput] --> entryPoint{EntryPoint}
+    entryPoint -->|CLI| cliCommands[FreeipaXfailCommands]
+    entryPoint -->|CursorChat| cursorRules[CursorRulesXfailMdc]
+    cursorRules --> mcpTools[McpTools]
+    cliCommands --> workflowCore[WorkflowCorePlanApply]
+    mcpTools --> workflowCore
+
+    workflowCore --> scanner[ScanXfailBlocks]
+    scanner --> ticketParser[ParseTicketRefs]
+    ticketParser --> trackerChecks[CheckJiraPagureStatus]
+    trackerChecks --> decisions[EvaluateDecisions]
+    decisions --> analysisTools[AIAnalysisTools]
+
+    analysisTools --> confirmGate{ApplyCommitConfirmed}
+    confirmGate -->|No| reportOnly[ReturnPlanAnalysisSummary]
+    confirmGate -->|Yes| applyChanges[ApplyCleanupAndOptionalCommit]
+    applyChanges --> gitOutput[UpdatedFilesCommitSHA]
+    gitOutput --> finalReport[FinalOperatorReport]
+    reportOnly --> finalReport
+```
+
+## Quick start (CLI)
 
 1) Install:
 
@@ -27,7 +52,7 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-2) Set environment variables (read-only tokens):
+2) Set tracker variables (read-only tokens):
 
 ```bash
 export JIRA_BASE_URL="https://your-jira.example.com"
@@ -35,7 +60,7 @@ export JIRA_EMAIL="you@example.com"
 export JIRA_API_TOKEN="***"
 ```
 
-Pagure variables are optional for FreeIPA public issues. The tool defaults to `https://pagure.io` and can use anonymous reads:
+Pagure variables are optional for FreeIPA public issues:
 
 ```bash
 # Optional only:
@@ -43,13 +68,11 @@ Pagure variables are optional for FreeIPA public issues. The tool defaults to `h
 # export PAGURE_API_TOKEN="***"
 ```
 
-3) See branches:
+3) Basic commands:
 
 ```bash
 freeipa-xfail branches --repo-path /path/to/freeipa
 ```
-
-4) Dry-run scan:
 
 ```bash
 freeipa-xfail scan \
@@ -60,13 +83,6 @@ freeipa-xfail scan \
   --path ipatests/test_xmlrpc
 ```
 
-The dry-run output includes:
-
-- planned files
-- proposed commit message
-
-5) Apply removal for closed tickets:
-
 ```bash
 freeipa-xfail apply \
   --repo-path /path/to/freeipa \
@@ -76,7 +92,7 @@ freeipa-xfail apply \
   --commit
 ```
 
-For interactive selection with keyboard controls:
+Interactive selection mode:
 
 ```bash
 freeipa-xfail apply \
@@ -86,7 +102,7 @@ freeipa-xfail apply \
   --xfail-selection all
 ```
 
-To **only try the checkbox UI** (up/down, space) with **no file edits and no commit**, combine `--interactive` and `--dry-run`:
+Interactive preview-only mode (no writes):
 
 ```bash
 freeipa-xfail apply \
@@ -97,64 +113,137 @@ freeipa-xfail apply \
   --xfail-selection all
 ```
 
-After you confirm the selection, the tool prints what would be removed and exits. It does not ask for apply confirmation and does not touch the working tree.
+## Cursor MCP setup (org-friendly)
 
-Options:
+### Step 1 - Install package
 
-- `--interactive`: opens a checkbox selector (up/down arrows to navigate, space to toggle)
-- in the same selector, press `v` to preview the currently highlighted testcase snippet and `b`/`Esc` to return
-- `--xfail-selection`: choose `all`, `plain-only`, or `conditional-only`
-- `--commit-strategy`: choose `batch` (single commit) or `single` (one commit per selected xfail)
-- `--push`: push commits to origin automatically
-
-`--expected-origin` is a safety guard. If your repository `origin` URL does not contain the given text, the command stops without making changes.
-
-If you want to use the `apply` command in preview-only mode:
+Option A:
 
 ```bash
-freeipa-xfail apply \
-  --repo-path /path/to/freeipa \
-  --branch master \
-  --expected-origin your-github-username \
-  --dry-run
+uv sync
 ```
 
-## Terminal colors
+Option B:
 
-The CLI uses [Rich](https://github.com/Textualize/rich) (widely used, maintained) for tables and progress output. It follows common conventions:
+```bash
+pip install -e .
+```
 
-- If **`NO_COLOR`** is set (any value), colors are disabled.
-- If stdout is not a TTY (pipes, some IDE panels), colors are off unless you set **`FORCE_COLOR=1`** or **`CLICOLOR_FORCE=1`**.
-- Interactive checkbox labels avoid `[brackets]` because [questionary](https://github.com/tmbo/questionary) / prompt_toolkit treats `[...]` as markup.
+### Step 2 - Install Cursor config
 
-## MCP server
+From workspace root:
 
-Run the MCP server:
+```bash
+bash install.sh
+```
+
+Installer behavior:
+
+- installs `.cursor/rules/xfail.mdc`
+- installs `.cursor/mcp.json` if missing
+- if `.cursor/mcp.json` exists, prints merge snippet for `mcpServers.freeipa-xfail-agent`
+
+Template files:
+
+- `cursor-config/mcp.json`
+- `cursor-config/rules/xfail.mdc`
+
+The MCP template uses workspace-local runtime defaults:
+
+- `command: .venv/bin/python`
+- `PYTHONPATH=src`
+
+This avoids `ModuleNotFoundError: No module named freeipa_xfail_agent` when Cursor starts MCP with system Python.
+
+### Step 3 - Restart Cursor
+
+Cursor reads `.cursor/mcp.json` on startup.
+
+### Step 4 - Verify
+
+Open Cursor chat and run:
+
+```text
+/xfail-plan
+```
+
+## MCP server and tools
+
+Run server:
 
 ```bash
 freeipa-xfail-mcp
 ```
 
-Provided tools:
+or:
 
+```bash
+python3 -m freeipa_xfail_agent.mcp_server
+```
+
+Tools:
+
+- `get_runtime_defaults`
 - `list_branches`
 - `scan_xfails`
 - `plan_xfail_cleanup`
 - `apply_xfail_cleanup`
+- `analyze_xfail_candidates`
+- `explain_conditional_xfails`
+- `improve_commit_message`
+- `generate_review_summary`
+
+### Per-user runtime defaults (for teams)
+
+Each engineer can configure local defaults:
+
+```bash
+export FREEIPA_XFAIL_REPO_PATH="/absolute/path/to/freeipa"
+export FREEIPA_XFAIL_BRANCH="master"
+export FREEIPA_XFAIL_EXPECTED_ORIGIN="your-github-username"
+export FREEIPA_XFAIL_PERSON_NAME="Your Name"
+export FREEIPA_XFAIL_PERSON_EMAIL="you@example.com"
+```
+
+Then MCP prompts can omit repo path, branch, and signoff identity.
+
+## Skills, rules, and config relationship
+
+- `.cursor/skills/freeipa-xfail-ops/SKILL.md`: main agent behavior for xfail tasks
+- `.cursor/skills/freeipa-xfail-ops/examples.md`: prompt-to-behavior examples
+- `.cursor/skills/freeipa-xfail-ops/reference.md`: MCP argument and safety reference
+- `cursor-config/mcp.json`: MCP server registration template
+- `cursor-config/rules/xfail.mdc`: slash-command routing (`/xfail-plan`, `/xfail-apply`)
+
+In short: `mcp.json` enables tools, rule file maps commands, skill files improve reasoning and safety behavior.
 
 ## Safety behavior
 
-- xfail removal occurs only when:
-  - an xfail block contains a ticket link/key
-  - tracker status is recognized as closed
-- ambiguous or inaccessible tickets are kept as-is
-- conditional xfails can be filtered and reviewed separately before removal
-- dry-run mode is default behavior for planning
+- Removal only when xfail has linked ticket(s) and all linked tickets are closed
+- Ambiguous/inaccessible tickets are kept
+- Conditional xfails can be reviewed separately before removal
+- Analysis tools are read-only
+- Apply/commit/push should happen only after explicit confirmation
+- `--expected-origin` (or defaulted `FREEIPA_XFAIL_EXPECTED_ORIGIN`) is a safety guard
+
+## Validation checkpoints
+
+Use these prompts in Cursor chat:
+
+- `scan all xfails on master and show risk notes`
+- `plan cleanup and explain only conditional xfails`
+- `improve commit message before apply`
+- `generate review summary and stop before write`
+- `apply cleanup with selection plain-only and commit_strategy single`
+
+Expected:
+
+- plan/scan/analysis do not edit files
+- apply edits only after explicit intent
+- unknown ticket states remain in `remaining`
 
 ## Status mapping defaults
 
-- JIRA closed statuses:
-  - `done`, `closed`, `resolved`
-- Pagure closed statuses:
-  - `closed`
+- JIRA closed statuses: `done`, `closed`, `resolved`
+- Pagure closed statuses: `closed`
 

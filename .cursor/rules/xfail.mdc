@@ -1,0 +1,26 @@
+---
+description: Xfail MCP command shortcuts
+alwaysApply: false
+---
+
+When the user enters `/xfail-plan`, run MCP tools in this order:
+1. `get_runtime_defaults`
+2. `plan_xfail_cleanup`
+3. `analyze_xfail_candidates`
+4. `explain_conditional_xfails`
+5. `improve_commit_message`
+6. `generate_review_summary`
+
+Return:
+- plan summary (removable/remaining)
+- conditional-xfail explanation
+- improved commit message draft
+- a confirmation question before any apply action
+
+When the user enters `/xfail-apply`, run:
+1. `get_runtime_defaults`
+2. `apply_xfail_cleanup` (only after explicit confirmation in the same conversation)
+
+Safety:
+- Never apply/commit/push without explicit user confirmation.
+- If runtime defaults are missing repo path, ask user for `repo_path`.

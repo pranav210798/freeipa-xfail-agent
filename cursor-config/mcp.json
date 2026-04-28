@@ -1,0 +1,22 @@
+{
+  "mcpServers": {
+    "freeipa-xfail-agent": {
+      "command": ".venv/bin/python",
+      "args": [
+        "-m",
+        "freeipa_xfail_agent.mcp_server"
+      ],
+      "env": {
+        "PYTHONPATH": "src",
+        "FREEIPA_XFAIL_REPO_PATH": "/absolute/path/to/freeipa",
+        "FREEIPA_XFAIL_BRANCH": "master",
+        "FREEIPA_XFAIL_EXPECTED_ORIGIN": "your-github-username",
+        "FREEIPA_XFAIL_PERSON_NAME": "Your Name",
+        "FREEIPA_XFAIL_PERSON_EMAIL": "you@example.com",
+        "JIRA_BASE_URL": "https://your-jira.example.com",
+        "JIRA_EMAIL": "you@example.com",
+        "JIRA_API_TOKEN": "your_read_only_token"
+      }
+    }
+  }
+}
